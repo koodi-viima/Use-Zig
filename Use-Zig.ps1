@@ -79,7 +79,7 @@ if ($ShouldInstall) {
         break
     }
 
-    if ($VersionPathExists -and $ForceInstall) {
+    if ($VersionExists -and $ForceInstall) {
         Write-Host "Removing previous installation of version $UserVersion"
         Remove-Item -Force -Recurse "$InstallPath\$UserVersion"
     }
