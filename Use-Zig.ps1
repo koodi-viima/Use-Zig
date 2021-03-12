@@ -10,9 +10,9 @@
 
     This command installs the current master of Zig.
 .EXAMPLE
-    Use-Zig.ps1 master -Install
+    Use-Zig.ps1 master -Update
 
-    This command re-installs (updates) master to the latest available build.
+    This command updates master to the latest available nightly build.
 #>
 
 # Change to i386 if you want to use the 32-bit versions instead, but note that
@@ -30,7 +30,7 @@ $ZIGS_PATH = "$env:USERPROFILE\AppData\Local\Zigs"
 $ZIG_VERSIONS_URL = "https://ziglang.org/download/index.json"
 
 $UserVersion = $args[0]
-$ForceInstall = $args[1] -eq "-Install"
+$UserUpdateRequest = $args[1] -eq "-Update"
 
 if (-not (Test-Path $ZIGS_PATH)) {
     New-Item -ItemType Directory $ZIGS_PATH | Out-Null
@@ -42,69 +42,94 @@ if (-not (Test-Path $InstallPath)) {
 }
 
 $VersionExists = Test-Path "$InstallPath\$UserVersion"
-$ShouldInstall = (-not $VersionExists) -or ($VersionExists -and $ForceInstall)
+$IsMasterUpdate = $VersionExists -and $UserUpdateRequest -and ($UserVersion -eq "master")
+$DoInstall = (-not $VersionExists) -or ($IsMasterUpdate)
 
-if ($ShouldInstall) {
+if ($DoInstall) {
 
     $Response = Invoke-WebRequest -Uri $ZIG_VERSIONS_URL
     if ($Response.StatusCode -ne 200) {
         Write-Host "Error: failed to get releases from: $ZIG_VERSION_URL"
-        break
+        exit
     }
 
     $Zigs = $Response.Content | ConvertFrom-Json
     if (-not $Zigs.$UserVersion) {
         Write-Host "Error: Zig version $UserVersion not available"
-        break
+        exit
     }
 
-    $DownloadUrl = $Zigs.$UserVersion."$ARCH-$PLATFORM".tarball
-    if (-not $DownloadUrl) {
-        "Error: Zig package not found for $ARCH-$PLATFORM and version $userVersion"
-        break
-    }
-
-    $TempPath = "$ZIGS_PATH\temp"
-    if (Test-Path $TempPath) {
-        # The temp folder may exist after an unsuccessfull previous run.
-        # Let's clean up.
-        Remove-Item -Recurse -Force $TempPath
-    }
-    New-Item -ItemType Directory $TempPath | Out-Null
-
-    Write-Host "Downloading Zig ($UserVersion) from $DownloadUrl..."
-    $Response = Invoke-WebRequest -Uri $DownloadUrl -OutFile "$TempPath\zig.zip" -PassThru
-    if ($Response.StatusCode -ne 200) {
-        Write-Host "Error: failed to download package from $DownloadUrl"
-        break
-    }
-
-    if ($VersionExists -and $ForceInstall) {
-        Write-Host "Removing previous installation of version $UserVersion"
-        Remove-Item -Force -Recurse "$InstallPath\$UserVersion"
-    }
-
-    Write-Host "Installing Zig ($UserVersion) to $InstallPath"
-    Expand-Archive "$TempPath\zig.zip" -DestinationPath $InstallPath
-
-    Remove-Item -Recurse -Force $TempPath
-
-    # We need the absolute version number to determine the name of the
-    # extracted folder, containing the Zig exe. This is simple for
-    # snapshot versions (like 0.7.1), but the master version is different, bc
-    # it actually has a detailed version number, like 0.8.0-dev.1127+6a5a6386c,
-    # pointing to the latest nightly build. Therefore we need to parse that
-    # version from the downloaded JSON file and use it.
-    if ($UserVersion -eq "master") {
-        $AbsoluteVersion = $zigs.master.version
+    # Define absolute version number
+    if ($IsMasterUpdate) {
+        $AbsoluteVersion = $Zigs.master.version
     }
     else {
         $AbsoluteVersion = $UserVersion
     }
-    $ExtractedFolderName = "zig-$PLATFORM-$ARCH-$AbsoluteVersion"
 
-    Rename-Item $InstallPath\$ExtractedFolderName $InstallPath\$UserVersion
+    # If master is already up-to-date we exit here
+    if ($IsMasterUpdate) {
+        $MasterVersionExists = Test-Path "$InstallPath\$AbsoluteVersion"
+        if ($MasterVersionExists) {
+            Write-Host "Version 'master' is already up-to-date"
+            $SkipDownload = $TRUE
+        }
+        else {
+            $SkipDownload = $FALSE
+        }
+    }
 
+    if (-not $SkipDownload) {
+        $DownloadUrl = $Zigs.$UserVersion."$ARCH-$PLATFORM".tarball
+        if (-not $DownloadUrl) {
+            "Error: Zig package not found for $ARCH-$PLATFORM and version $userVersion"
+            exit
+        }
+
+        $TempPath = "$ZIGS_PATH\temp"
+        if (Test-Path $TempPath) {
+            # The temp folder may exist after an unsuccessfull previous run.
+            # Let's clean up.
+            Remove-Item -Recurse -Force $TempPath
+        }
+        New-Item -ItemType Directory $TempPath | Out-Null
+
+        Write-Host "Downloading Zig ($AbsoluteVersion) from $DownloadUrl..."
+        $Response = Invoke-WebRequest -Uri $DownloadUrl -OutFile "$TempPath\zig.zip" -PassThru
+        if ($Response.StatusCode -ne 200) {
+            Write-Host "Error: failed to download package from $DownloadUrl"
+            exit
+        }
+
+        Write-Host "Installing Zig ($AbsoluteVersion) to $InstallPath"
+        Expand-Archive "$TempPath\zig.zip" -DestinationPath $InstallPath
+
+        Remove-Item -Recurse -Force $TempPath
+
+        $ExtractedFolderName = "zig-$PLATFORM-$ARCH-$AbsoluteVersion"
+        Rename-Item $InstallPath\$ExtractedFolderName $InstallPath\$AbsoluteVersion
+
+        if (($UserVersion -eq "master") -or $IsMasterUpdate) {
+            $MasterJunctionPath = "$InstallPath\master"
+            if ($IsMasterUpdate) {
+                $CurrentMaster = (Get-Item $MasterJunctionPath).Target
+                # This if is required for backwards compatibility with the previous
+                # version, where 'master' was a regular folder.
+                if ($CurrentMaster) {
+                    Write-Host "Removing previous version of master"
+                    Remove-Item -Force -Recurse $CurrentMaster
+                }
+                else {
+                    # This is the case of the old plain 'master' folder
+                    Remove-Item -Force -Recurse $MasterJunctionPath
+                }
+            }
+            if (Test-Path $MasterJunctionPath) {
+                Remove-Item $MasterJunctionPath
+            }
+            New-Item -ItemType Junction -Path $MasterJunctionPath -Target "$InstallPath\$AbsoluteVersion" | Out-Null
+        }
+    }
     $Success = $TRUE
 }
 else {
