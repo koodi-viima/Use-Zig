@@ -60,7 +60,7 @@ if ($DoInstall) {
     }
 
     # Define absolute version number
-    if ($IsMasterUpdate) {
+    if ($IsMasterUpdate -or ($UserVersion -eq "master")) {
         $AbsoluteVersion = $Zigs.master.version
     }
     else {
